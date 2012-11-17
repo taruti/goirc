@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"code.google.com/p/go.net/proxy"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -49,6 +50,7 @@ type Conn struct {
 	// Are we connecting via SSL? Do we care about certificate validity?
 	SSL       bool
 	SSLConfig *tls.Config
+	Dialer    proxy.Dialer
 
 	// Client->server ping frequency, in seconds. Defaults to 3m.
 	PingFreq time.Duration
@@ -57,7 +59,7 @@ type Conn struct {
 	Flood bool
 
 	// Internal counters for flood protection
-	badness time.Duration
+	badness  time.Duration
 	lastsent time.Time
 }
 
@@ -156,22 +158,32 @@ func (conn *Conn) Connect(host string, pass ...string) error {
 			host += ":6697"
 		}
 		conn.l.Info("irc.Connect(): Connecting to %s with SSL.", host)
-		if s, err := tls.Dial("tcp", host, conn.SSLConfig); err == nil {
-			conn.sock = s
-		} else {
-			return err
-		}
 	} else {
 		if !hasPort(host) {
 			host += ":6667"
 		}
 		conn.l.Info("irc.Connect(): Connecting to %s without SSL.", host)
-		if s, err := net.Dial("tcp", host); err == nil {
-			conn.sock = s
-		} else {
+	}
+
+	d := conn.Dialer
+	if d == nil {
+		d = proxy.Direct
+	}
+	if s, err := d.Dial("tcp", host); err == nil {
+		conn.sock = s
+	} else {
+		return err
+	}
+
+	if conn.SSL {
+		c := tls.Client(conn.sock, conn.SSLConfig)
+		if err := c.Handshake(); err != nil {
+			c.Close()
 			return err
 		}
+		conn.sock = c
 	}
+
 	conn.Host = host
 	conn.Connected = true
 	conn.postConnect()
